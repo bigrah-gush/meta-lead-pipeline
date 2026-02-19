@@ -1,6 +1,6 @@
 const https = require('https');
 
-const CHANNEL = 'C077MFL1H4L';
+const CHANNEL = 'C0A1RMXTUJ3';
 
 function postMessage(payload) {
   return new Promise((resolve, reject) => {
@@ -34,6 +34,11 @@ function postMessage(payload) {
 async function notifySlack(lead) {
   const platform = (lead.platform || 'META').toUpperCase();
 
+  const time = new Date(lead.created_time).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+  });
+
   await postMessage({
     channel: CHANNEL,
     text: `New ${platform} Lead: ${lead.full_name || 'Unknown'}`,
@@ -42,29 +47,28 @@ async function notifySlack(lead) {
         type: 'header',
         text: { type: 'plain_text', text: `🔔 New ${platform} Lead` },
       },
+      { type: 'divider' },
       {
         type: 'section',
         fields: [
-          { type: 'mrkdwn', text: `*Name:*\n${lead.full_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `*Company:*\n${lead.company_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `*Phone:*\n${lead.phone || lead.phone_number || 'N/A'}` },
-          { type: 'mrkdwn', text: `*Email:*\n${lead.email || 'N/A'}` },
+          { type: 'mrkdwn', text: `👤 *Name*\n${lead.full_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `🏢 *Company*\n${lead.company_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `📞 *Phone*\n${lead.phone || lead.phone_number || 'N/A'}` },
+          { type: 'mrkdwn', text: `📧 *Email*\n${lead.email || 'N/A'}` },
         ],
       },
       {
         type: 'section',
         fields: [
-          { type: 'mrkdwn', text: `*Campaign:*\n${lead.campaign_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `*Ad Set:*\n${lead.adset_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `📣 *Campaign*\n${lead.campaign_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `🎯 *Ad Set*\n${lead.adset_name || 'N/A'}` },
         ],
       },
+      { type: 'divider' },
       {
         type: 'context',
         elements: [
-          {
-            type: 'mrkdwn',
-            text: `Lead ID: ${lead.id} | ${lead.created_time}`,
-          },
+          { type: 'mrkdwn', text: `🕐 ${time} ET  •  Lead ID: ${lead.id}` },
         ],
       },
     ],

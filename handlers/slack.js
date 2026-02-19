@@ -34,41 +34,65 @@ function postMessage(payload) {
 async function notifySlack(lead) {
   const platform = (lead.platform || 'META').toUpperCase();
 
-  const time = new Date(lead.created_time).toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
+  const time = new Date(lead.created_time).toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
   });
 
+  const sheetsUrl = `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SHEETS_ID}`;
+
   await postMessage({
     channel: CHANNEL,
-    text: `New ${platform} Lead: ${lead.full_name || 'Unknown'}`,
+    text: `New Lead Captured: ${lead.full_name || 'Unknown'}`,
     blocks: [
       {
         type: 'header',
-        text: { type: 'plain_text', text: `🔔 New ${platform} Lead` },
+        text: { type: 'plain_text', text: '🚀 New Lead Captured' },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `A new prospect has entered the pipeline.\nLead has been added to the *Meta Ads → Sales Dialer* campaign.`,
+        },
       },
       { type: 'divider' },
       {
         type: 'section',
         fields: [
-          { type: 'mrkdwn', text: `👤 *Name*\n${lead.full_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `🏢 *Company*\n${lead.company_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `📞 *Phone*\n${lead.phone || lead.phone_number || 'N/A'}` },
-          { type: 'mrkdwn', text: `📧 *Email*\n${lead.email || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Name*\n${lead.full_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Company*\n${lead.company_name || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Email*\n${lead.email || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Phone*\n${lead.phone || lead.phone_number || 'N/A'}` },
         ],
       },
       {
         type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `📣 *Campaign*\n${lead.campaign_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `🎯 *Ad Set*\n${lead.adset_name || 'N/A'}` },
-        ],
+        text: {
+          type: 'mrkdwn',
+          text: `*Campaign / Ad*\n_${lead.ad_name || lead.campaign_name || 'N/A'}_`,
+        },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Lead Status*\nQualified` },
       },
       { type: 'divider' },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '📊 View All Leads' },
+            url: sheetsUrl,
+            style: 'primary',
+          },
+        ],
+      },
       {
         type: 'context',
         elements: [
-          { type: 'mrkdwn', text: `🕐 ${time} ET  •  Lead ID: ${lead.id}` },
+          { type: 'mrkdwn', text: `⚡ Faster follow-ups convert better  •  :calendar: ${time}` },
         ],
       },
     ],

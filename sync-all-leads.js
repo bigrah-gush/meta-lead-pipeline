@@ -5,10 +5,22 @@ const { google } = require('googleapis');
 const FORM_IDS = process.env.META_FORM_IDS.split(',');
 const SHEET_ID = process.env.GOOGLE_SHEETS_ID;
 
+const FORM_NAMES = {
+  '1449187046631320': 'Lead + Savvycal',
+  '906026261834302':  'Manufacturing',
+  '1618694649166504': 'B2B | Leads',
+  '1592360018634471': 'B2B - HI',
+};
+
 // ── Google Sheets auth ──────────────────────────────────────────────────────
 async function getSheets() {
+  const credentials = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+    : undefined;
+
   const auth = new google.auth.GoogleAuth({
-    keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+    credentials,
+    keyFile: credentials ? undefined : process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   return google.sheets({ version: 'v4', auth });
@@ -30,6 +42,7 @@ function normalizeLead(raw) {
   const lead = {
     id:            raw.id,
     created_time:  raw.created_time,
+    form_id:       raw.form_id || '',
     platform:      raw.platform || '',
     campaign_name: raw.campaign_name || '',
     adset_name:    raw.adset_name || '',
@@ -44,16 +57,23 @@ function normalizeLead(raw) {
 // ── Map lead to sheet row ──────────────────────────────────────────────────
 function toRow(lead) {
   return [
-    lead.created_time  || '',
-    lead.id            || '',
-    lead.full_name     || '',
-    lead.phone         || '',
-    lead.email         || '',
-    lead.company_name  || '',
-    lead.platform      || '',
-    lead.campaign_name || '',
-    lead.adset_name    || '',
-    lead.ad_name       || '',
+    lead.created_time                                    || '',
+    lead.id                                              || '',
+    FORM_NAMES[lead.form_id] || lead.form_id             || '',
+    lead.campaign_name                                   || '',
+    lead.adset_name                                      || '',
+    lead.ad_name                                         || '',
+    lead.platform                                        || '',
+    lead.full_name                                       || '',
+    lead.email                                           || '',
+    lead.phone                                           || '',
+    lead.phone_number                                    || '',
+    lead.user_provided_phone_number                      || '',
+    lead.company_name                                    || '',
+    lead.website                                         || '',
+    lead['what_best_describes_your_company_size?']       || '',
+    lead['who_do_you_primarily_sell_to?']                || '',
+    '', // Status
   ];
 }
 
@@ -63,7 +83,7 @@ async function fetchLeadsFromForm(formId) {
   let url = `https://graph.facebook.com/v19.0/${formId}/leads`;
   let params = {
     access_token: process.env.META_PAGE_ACCESS_TOKEN,
-    fields: 'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,platform,field_data',
+    fields: 'id,created_time,form_id,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,platform,field_data',
     limit: 100,
   };
 
@@ -116,8 +136,8 @@ async function run() {
   // Batch insert all new rows at once
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!A:J',
-    valueInputOption: 'USER_ENTERED',
+    range: 'Sheet1!A:Q',
+    valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: newLeads.map(toRow) },
   });

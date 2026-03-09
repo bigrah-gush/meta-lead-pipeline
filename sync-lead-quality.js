@@ -57,9 +57,10 @@ const COL = {
 };
 
 // Status → CAPI event name mapping
+// Campaigns optimise for custom event "salesqualifiedlead" — must match exactly
 const STATUS_MAP = {
-  qualified:    'QualifiedLead',
-  good:         'QualifiedLead',
+  qualified:    'salesqualifiedlead',
+  good:         'salesqualifiedlead',
   converted:    'Purchase',
 };
 
@@ -113,7 +114,7 @@ async function sendCapiEvent(eventName, row, leadId) {
     data: [{
       event_name:    eventName,
       event_time:    eventTime,
-      event_id:      `${leadId}_${eventName.toLowerCase()}`,
+      event_id:      `${leadId}_${eventName}`,
       action_source: 'system_generated',
       user_data:     buildUserData(row),
       custom_data: {

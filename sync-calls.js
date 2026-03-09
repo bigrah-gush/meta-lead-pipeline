@@ -1,223 +1,258 @@
+/**
+ * sync-calls.js
+ *
+ * Fetches all outbound AI SDR calls from Retell, matches them to Meta leads
+ * by phone number, and writes/refreshes the "AI Calls" sheet in the workbook.
+ *
+ * Sheet columns (one row per call, oldest first):
+ *   A  Call Date/Time
+ *   B  Call ID
+ *   C  Lead Name
+ *   D  Lead ID          (links to Sheet1 col B)
+ *   E  Phone Called
+ *   F  Duration (sec)
+ *   G  Call Status
+ *   H  Disconnection Reason
+ *   I  Call Successful
+ *   J  In Voicemail
+ *   K  Sentiment
+ *   L  Call Summary
+ *   M  Agent
+ *   N  Attempt #
+ */
+
 require('dotenv').config();
-const axios = require('axios');
+const axios  = require('axios');
 const { google } = require('googleapis');
 
-const CALL_SHEET_NAME = 'Call Analysis';
-const ADS_START = new Date('2026-01-21T00:00:00Z');
+const SHEET_NAME  = 'AI Calls';
+const SHEET_ID    = process.env.GOOGLE_SHEETS_ID;
+const RETELL_KEY  = process.env.RETELL_API_KEY;
 
-// ── JustCall auth ───────────────────────────────────────────────────────────
-const JC_AUTH = 'Basic ' + Buffer.from(
-  `${process.env.JUSTCALL_API_KEY}:${process.env.JUSTCALL_API_SECRET}`
-).toString('base64');
+const HEADERS = [
+  'Call Date/Time',
+  'Call ID',
+  'Lead Name',
+  'Lead ID',
+  'Phone Called',
+  'Duration (sec)',
+  'Call Status',
+  'Disconnection Reason',
+  'Call Successful',
+  'In Voicemail',
+  'Sentiment',
+  'Call Summary',
+  'Agent',
+  'Attempt #',
+];
 
-// ── Google Sheets ───────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function normalizePhone(p = '') {
+  return p.replace(/\D/g, '');
+}
+
 async function getSheets() {
+  const credentials = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+    : undefined;
   const auth = new google.auth.GoogleAuth({
-    keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+    credentials,
+    keyFile: credentials ? undefined : process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   return google.sheets({ version: 'v4', auth });
 }
 
-// ── Normalize phone: strip +, spaces, dashes → plain digits ────────────────
-function normalizePhone(p = '') {
-  return p.replace(/\D/g, '');
-}
+// ── Load leads from Sheet1, build phone → {id, name} map ──────────────────
 
-// ── Fetch all Meta leads from Sheet1 (phone + metadata) ────────────────────
-async function getMetaLeads(sheets) {
+async function buildLeadMap(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
-    spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A:J',
+    spreadsheetId: SHEET_ID,
+    range: 'Sheet1!A:L',  // up to User Provided Phone (col L)
   });
-  const [headers, ...rows] = data.values || [];
-  // Sheet columns: Timestamp, Lead ID, Full Name, Phone, Email, Company Name, Platform, Campaign, Ad Set, Ad Name
-  return rows.map(r => ({
-    timestamp:    r[0] || '',
-    id:           r[1] || '',
-    full_name:    r[2] || '',
-    phone:        normalizePhone(r[3]),
-    email:        r[4] || '',
-    company_name: r[5] || '',
-    platform:     r[6] || '',
-    campaign:     r[7] || '',
-  })).filter(l => l.phone);
-}
 
-// ── Fetch JustCall calls since ADS_START, stop when older ──────────────────
-async function fetchCallsSinceAdsLive() {
-  const calls = [];
-  let page = 1;
-  let done = false;
-
-  while (!done) {
-    const { data } = await axios.get('https://api.justcall.io/v2/calls', {
-      headers: { Authorization: JC_AUTH },
-      params: { per_page: 100, page },
-    });
-
-    const batch = data.data || [];
-    if (batch.length === 0) break;
-
-    for (const call of batch) {
-      const callDate = new Date(`${call.call_date}T${call.call_time}Z`);
-      if (callDate < ADS_START) {
-        done = true; // older than ad launch, stop
-        break;
-      }
-      calls.push(call);
-    }
-
-    console.log(`  Page ${page}: ${calls.length} calls fetched so far...`);
-    if (data.next_page_link && !done) {
-      page++;
-    } else {
-      break;
-    }
-  }
-
-  return calls;
-}
-
-// ── Group calls by normalized phone number ──────────────────────────────────
-function groupCallsByPhone(calls) {
+  const [, ...rows] = data.values || [];
   const map = {};
-  for (const call of calls) {
-    const phone = normalizePhone(call.contact_number);
-    if (!map[phone]) map[phone] = [];
-    map[phone].push(call);
+
+  for (const r of rows) {
+    const id   = r[1] || '';
+    const name = r[7] || '';  // Full Name (col H)
+    // cols J, K, L = phone, phone_number, user_provided_phone_number
+    const phones = [r[9], r[10], r[11]].map(normalizePhone).filter(Boolean);
+    for (const ph of phones) {
+      if (!map[ph]) map[ph] = { id, name };
+    }
   }
+
   return map;
 }
 
-// ── Summarize a list of calls for one prospect ──────────────────────────────
-function summarizeCalls(calls) {
-  // Sort newest first
-  const sorted = [...calls].sort((a, b) =>
-    new Date(`${b.call_date}T${b.call_time}Z`) - new Date(`${a.call_date}T${a.call_time}Z`)
-  );
+// ── Fetch all outbound Retell calls (paginated) ────────────────────────────
 
-  const total      = calls.length;
-  const connected  = calls.filter(c => c.call_info?.type === 'answered').length;
-  const missed     = calls.filter(c => c.call_info?.type === 'unanswered').length;
-  const voicemail  = calls.filter(c => c.call_info?.type === 'voicemail').length;
+async function fetchAllCalls() {
+  const all = [];
+  let paginationKey = null;
 
-  const last       = sorted[0];
-  const lastDate   = `${last.call_date} ${last.call_time}`;
-  const lastDisp   = last.call_info?.disposition || '';
-  const lastAgent  = last.agent_name || '';
+  do {
+    const body = {
+      limit: 1000,
+      sort_order: 'ascending',
+      filter_criteria: { direction: ['outbound'] },
+    };
+    if (paginationKey) body.pagination_key = paginationKey;
 
-  const agents = [...new Set(calls.map(c => c.agent_name).filter(Boolean))].join(', ');
+    const { data } = await axios.post(
+      'https://api.retellai.com/v2/list-calls',
+      body,
+      { headers: { Authorization: `Bearer ${RETELL_KEY}` } }
+    );
 
-  // Compact call history: date | outcome | agent
-  const history = sorted.slice(0, 10).map(c =>
-    `${c.call_date} ${c.call_time} | ${c.call_info?.disposition || c.call_info?.type} | ${c.agent_name}`
-  ).join('\n');
+    all.push(...data);
+    paginationKey = data.length === 1000 ? data[data.length - 1].call_id : null;
+    process.stdout.write(`\r  Fetched ${all.length} calls...`);
+  } while (paginationKey);
 
-  return { total, connected, missed, voicemail, lastDate, lastDisp, lastAgent, agents, history };
+  console.log();
+  return all;
 }
 
-// ── Ensure "Call Analysis" sheet exists, create if not ─────────────────────
-async function ensureCallSheet(sheets) {
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: process.env.GOOGLE_SHEETS_ID });
-  const exists = meta.data.sheets.some(s => s.properties.title === CALL_SHEET_NAME);
+// ── Map a Retell call to a sheet row ───────────────────────────────────────
+
+function callToRow(call, leadMap) {
+  const ph    = normalizePhone(call.to_number || '');
+  const lead  = leadMap[ph] || {};
+  const ana   = call.call_analysis || {};
+  const meta  = call.metadata      || {};
+
+  const startMs = call.start_timestamp;
+  const dateStr = startMs
+    ? new Date(startMs).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+    : '';
+
+  const durSec = call.duration_ms ? (call.duration_ms / 1000).toFixed(1) : '0';
+
+  return [
+    dateStr,
+    call.call_id                        || '',
+    lead.name                           || '',
+    lead.id                             || '',
+    call.to_number                      || '',
+    durSec,
+    call.call_status                    || '',
+    call.disconnection_reason           || '',
+    ana.call_successful ? 'Yes' : 'No',
+    ana.in_voicemail    ? 'Yes' : 'No',
+    ana.user_sentiment                  || '',
+    ana.call_summary                    || '',
+    call.agent_name                     || '',
+    meta.attempt_number                 || '',
+  ];
+}
+
+// ── Ensure "AI Calls" sheet exists ────────────────────────────────────────
+
+async function ensureSheet(sheets) {
+  const { data } = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const exists = data.sheets.some(s => s.properties.title === SHEET_NAME);
 
   if (!exists) {
     await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+      spreadsheetId: SHEET_ID,
       requestBody: {
-        requests: [{ addSheet: { properties: { title: CALL_SHEET_NAME } } }],
+        requests: [{ addSheet: { properties: { title: SHEET_NAME } } }],
       },
     });
-    console.log(`Created sheet: ${CALL_SHEET_NAME}`);
+    console.log(`Created sheet: ${SHEET_NAME}`);
+    // Re-fetch so the new sheet appears
+    const { data: fresh } = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    return fresh.sheets.find(s => s.properties.title === SHEET_NAME).properties.sheetId;
   }
+
+  return data.sheets.find(s => s.properties.title === SHEET_NAME).properties.sheetId;
 }
 
-// ── Write headers + rows to Call Analysis sheet ─────────────────────────────
-async function writeCallSheet(sheets, rows) {
-  const HEADERS = [
-    'Lead Name', 'Phone', 'Email', 'Company', 'Platform', 'Campaign',
-    'Total Calls', 'Connected', 'Not Answered', 'Voicemail',
-    'Last Called', 'Last Disposition', 'Last Agent', 'All Agents',
-    'Call History (last 10)',
-  ];
+// ── Write all rows + formatting ────────────────────────────────────────────
 
-  // Clear sheet first
+async function writeSheet(sheets, sheetId, rows) {
+  // Clear
   await sheets.spreadsheets.values.clear({
-    spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: `${CALL_SHEET_NAME}!A:O`,
+    spreadsheetId: SHEET_ID,
+    range: `${SHEET_NAME}`,
   });
 
+  // Write data
   await sheets.spreadsheets.values.update({
-    spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: `${CALL_SHEET_NAME}!A1`,
+    spreadsheetId: SHEET_ID,
+    range: `${SHEET_NAME}!A1`,
     valueInputOption: 'RAW',
     requestBody: { values: [HEADERS, ...rows] },
+  });
+
+  // Bold header + freeze
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+            cell: { userEnteredFormat: { textFormat: { bold: true } } },
+            fields: 'userEnteredFormat.textFormat.bold',
+          },
+        },
+        {
+          updateSheetProperties: {
+            properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+            fields: 'gridProperties.frozenRowCount',
+          },
+        },
+      ],
+    },
   });
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
+
 async function run() {
+  if (!RETELL_KEY) {
+    console.error('RETELL_API_KEY not set in .env');
+    process.exit(1);
+  }
+
   console.log('Connecting to Google Sheets...');
   const sheets = await getSheets();
 
-  console.log('Loading Meta leads from Sheet1...');
-  const leads = await getMetaLeads(sheets);
-  console.log(`  ${leads.length} leads with phone numbers`);
+  console.log('Loading leads from Sheet1...');
+  const leadMap = await buildLeadMap(sheets);
+  console.log(`  ${Object.keys(leadMap).length} phone numbers indexed`);
 
-  // Build phone → lead map
-  const leadByPhone = {};
-  for (const lead of leads) {
-    leadByPhone[lead.phone] = lead;
-  }
+  console.log('\nFetching Retell calls...');
+  const calls = await fetchAllCalls();
+  console.log(`  ${calls.length} outbound calls total`);
 
-  console.log('\nFetching JustCall calls since ads went live (2026-01-21)...');
-  const calls = await fetchCallsSinceAdsLive();
-  console.log(`  ${calls.length} total calls fetched\n`);
+  const rows = calls.map(c => callToRow(c, leadMap));
 
-  // Group all calls by phone
-  const callsByPhone = groupCallsByPhone(calls);
+  const matched = rows.filter(r => r[3]).length;
+  console.log(`  ${matched} calls matched to Meta leads`);
+  console.log(`  ${calls.length - matched} calls to untracked numbers`);
 
-  // Match calls to Meta leads only
-  const matchedPhones = Object.keys(callsByPhone).filter(p => leadByPhone[p]);
-  const unmatchedCount = Object.keys(callsByPhone).length - matchedPhones.length;
+  console.log(`\nWriting to "${SHEET_NAME}" sheet...`);
+  const sheetId = await ensureSheet(sheets);
+  await writeSheet(sheets, sheetId, rows);
 
-  console.log(`  ${matchedPhones.length} Meta leads have call activity`);
-  console.log(`  ${unmatchedCount} calls to non-Meta numbers (ignored)`);
+  // Stats
+  const ended       = calls.filter(c => c.call_status === 'ended').length;
+  const noAnswer    = calls.filter(c => c.disconnection_reason === 'dial_no_answer').length;
+  const voicemail   = calls.filter(c => c.call_analysis?.in_voicemail).length;
+  const successful  = calls.filter(c => c.call_analysis?.call_successful).length;
 
-  // Build rows: one row per Meta lead that was called
-  const rows = matchedPhones.map(phone => {
-    const lead = leadByPhone[phone];
-    const s    = summarizeCalls(callsByPhone[phone]);
-    return [
-      lead.full_name,
-      '+' + phone,
-      lead.email,
-      lead.company_name,
-      lead.platform,
-      lead.campaign,
-      s.total,
-      s.connected,
-      s.missed,
-      s.voicemail,
-      s.lastDate,
-      s.lastDisp,
-      s.lastAgent,
-      s.agents,
-      s.history,
-    ];
-  });
-
-  // Sort by total calls desc
-  rows.sort((a, b) => b[6] - a[6]);
-
-  console.log(`\nWriting ${rows.length} rows to "${CALL_SHEET_NAME}" sheet...`);
-  await ensureCallSheet(sheets);
-  await writeCallSheet(sheets, rows);
-
-  console.log(`\n✓ Done. Call Analysis sheet populated.`);
-  console.log(`  ${rows.length} Meta leads with calls`);
-  console.log(`  ${leads.length - rows.length} Meta leads never called`);
+  console.log(`\n✓ Done. "${SHEET_NAME}" populated with ${rows.length} calls.`);
+  console.log(`\nBreakdown:`);
+  console.log(`  Ended (connected):  ${ended}`);
+  console.log(`  No answer:          ${noAnswer}`);
+  console.log(`  Voicemail:          ${voicemail}`);
+  console.log(`  Successful:         ${successful}`);
 }
 
 run().catch(err => {

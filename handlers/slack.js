@@ -44,6 +44,8 @@ async function notifySlack(lead) {
   await postMessage({
     channel: CHANNEL,
     text: `New Lead Captured: ${lead.full_name || 'Unknown'}`,
+    unfurl_links: false,
+    unfurl_media: false,
     blocks: [
       {
         type: 'header',
@@ -61,9 +63,11 @@ async function notifySlack(lead) {
         type: 'section',
         fields: [
           { type: 'mrkdwn', text: `*Name*\n${lead.full_name || 'N/A'}` },
-          { type: 'mrkdwn', text: `*Company*\n${lead.company_name || 'N/A'}` },
           { type: 'mrkdwn', text: `*Email*\n${lead.email || 'N/A'}` },
           { type: 'mrkdwn', text: `*Phone*\n${lead.phone || lead.phone_number || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Secondary Phone*\n${lead.secondary_phone_number || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Website*\n${lead.website || 'N/A'}` },
+          { type: 'mrkdwn', text: `*Company Size*\n${lead['what_best_describes_your_company_size?'] || 'N/A'}` },
         ],
       },
       {

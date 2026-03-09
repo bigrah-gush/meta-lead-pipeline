@@ -14,21 +14,37 @@ function getHeaders() {
   };
 }
 
-async function addToCampaign(lead, campaignId) {
-  const phone = (lead.phone || lead.phone_number || '').startsWith('+')
-    ? (lead.phone || lead.phone_number)
-    : `+${lead.phone || lead.phone_number}`;
+function isAlreadyInCampaignError(error) {
+  const status = error?.response?.status;
+  const message = String(error?.response?.data?.message || '').toLowerCase();
+  return status === 400 && message.includes('already exists in campaign');
+}
 
-  await axios.post(
-    'https://api.justcall.io/v2.1/sales_dialer/campaigns/contact',
-    {
-      campaign_id: campaignId,
-      name: lead.full_name || '',
-      email: lead.email || '',
-      phone,
-    },
-    { headers: getHeaders() }
-  );
+async function addToCampaign(lead, campaignId) {
+  const rawPhone = (lead.phone || lead.phone_number || lead.user_provided_phone_number || '').trim();
+  if (!rawPhone) {
+    throw new Error('Lead phone is missing');
+  }
+  const phoneNumber = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+
+  try {
+    await axios.post(
+      'https://api.justcall.io/v2.1/sales_dialer/campaigns/contact',
+      {
+        campaign_id: campaignId,
+        name: lead.full_name || '',
+        email: lead.email || '',
+        phone_number: phoneNumber,
+      },
+      { headers: getHeaders() }
+    );
+  } catch (error) {
+    if (isAlreadyInCampaignError(error)) {
+      console.log(`Already in JustCall campaign ${campaignId}: ${phoneNumber}`);
+      return;
+    }
+    throw error;
+  }
 
   console.log(`Added to JustCall campaign ${campaignId}`);
 }

@@ -53,6 +53,7 @@ function verifyMetaSignature(req) {
 let syncAllLeadsRunning = false;
 let syncRecentRunning = false;
 let syncLeadQualityRunning = false;
+let syncCallsRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
@@ -178,6 +179,57 @@ function triggerSyncRecent(trigger = 'unknown', hours = 4) {
       details: `trigger=${trigger}`,
     });
     syncRecentRunning = false;
+  });
+
+  return true;
+}
+
+function triggerSyncCalls(trigger = 'unknown') {
+  if (syncCallsRunning) return false;
+
+  syncCallsRunning = true;
+  console.log(`[sync-calls] started by ${trigger}`);
+  let stderrBuffer = '';
+
+  const child = spawn(process.execPath, ['sync-calls.js'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[sync-calls] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[sync-calls] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[sync-calls] completed successfully');
+    } else {
+      console.error(`[sync-calls] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'sync-calls execution failed',
+        component: 'sync-calls',
+        error: new Error(`sync-calls exited with code ${code}`),
+        details: `trigger=${trigger}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    syncCallsRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[sync-calls] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'sync-calls failed to start',
+      component: 'sync-calls',
+      error: err,
+      details: `trigger=${trigger}`,
+    });
+    syncCallsRunning = false;
   });
 
   return true;
@@ -355,6 +407,22 @@ app.post('/jobs/sync-recent', (req, res) => {
   }
 
   return res.status(202).json({ status: 'started', hours });
+});
+
+// ── Cron-triggered Retell calls sync ────────────────────────────────────────
+app.post('/jobs/sync-calls', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  if (!triggerSyncCalls('cron')) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started' });
 });
 
 // ── Cron-triggered lead quality CAPI sync ───────────────────────────────────

@@ -54,6 +54,7 @@ let syncAllLeadsRunning = false;
 let syncRecentRunning = false;
 let syncLeadQualityRunning = false;
 let syncCallsRunning = false;
+let autoBookB2BRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
@@ -286,8 +287,68 @@ function triggerSyncLeadQuality(trigger = 'unknown') {
   return true;
 }
 
+function triggerAutoBookB2B(trigger = 'unknown', dryRun = false) {
+  if (autoBookB2BRunning) return false;
+
+  autoBookB2BRunning = true;
+  console.log(`[auto-book-b2b] started by ${trigger}${dryRun ? ' [dry-run]' : ''}`);
+  let stderrBuffer = '';
+
+  const args = ['auto-book-b2b-leads.js', '--once'];
+  if (dryRun) args.push('--dry-run');
+
+  const child = spawn(process.execPath, args, {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[auto-book-b2b] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[auto-book-b2b] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[auto-book-b2b] completed successfully');
+    } else {
+      console.error(`[auto-book-b2b] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'auto-book-b2b execution failed',
+        component: 'auto-book-b2b',
+        error: new Error(`auto-book-b2b exited with code ${code}`),
+        details: `trigger=${trigger}${dryRun ? ' dryRun=true' : ''}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    autoBookB2BRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[auto-book-b2b] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'auto-book-b2b failed to start',
+      component: 'auto-book-b2b',
+      error: err,
+      details: `trigger=${trigger}${dryRun ? ' dryRun=true' : ''}`,
+    });
+    autoBookB2BRunning = false;
+  });
+
+  return true;
+}
+
 // Run sync-recent every 2 hours as a failsafe for missed webhooks
-setInterval(() => triggerSyncRecent('2h-cron'), 2 * 60 * 60 * 1000);
+setInterval(() => triggerSyncRecent('30m-cron'), 30 * 60 * 1000);
+
+// Poll Sheet1 for new "businesses_(b2b)" rows and auto-book from 7PM-9PM IST slots.
+const autoBookIntervalMs = parseInt(process.env.B2B_AUTO_BOOK_INTERVAL_MS || '60000', 10);
+if (Number.isFinite(autoBookIntervalMs) && autoBookIntervalMs > 0) {
+  setInterval(() => triggerAutoBookB2B('poller'), autoBookIntervalMs);
+}
 
 // ── Main webhook receiver (POST) ────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
@@ -439,6 +500,23 @@ app.post('/jobs/sync-lead-quality', (req, res) => {
   }
 
   return res.status(202).json({ status: 'started' });
+});
+
+// ── Manual / cron-triggered B2B auto-booking ───────────────────────────────
+app.post('/jobs/auto-book-b2b', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  const dryRun = ['1', 'true', 'yes'].includes(String(req.query.dryRun || '').toLowerCase());
+  if (!triggerAutoBookB2B('manual', dryRun)) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started', dryRun });
 });
 
 // ── Test endpoint (simulate a lead without Meta) ────────────────────────────

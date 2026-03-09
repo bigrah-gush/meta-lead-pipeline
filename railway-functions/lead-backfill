@@ -1,8 +1,8 @@
 (async () => {
   const cronSecret = process.env.CRON_SYNC_SECRET;
   const syncUrl =
-    process.env.CRON_SYNC_URL_QUALITY ||
-    'https://meta-lead-pipeline-production-407c.up.railway.app/jobs/sync-lead-quality';
+    process.env.CRON_SYNC_URL ||
+    'https://meta-lead-pipeline-production-407c.up.railway.app/jobs/sync-all-leads';
 
   if (!cronSecret) {
     console.error('CRON_SYNC_SECRET is not configured');
@@ -17,7 +17,7 @@
   });
 
   const body = await res.text();
-  console.log(`sync-lead-quality status=${res.status} body=${body}`);
+  console.log(`sync status=${res.status} body=${body}`);
 
   if (![200, 202, 409].includes(res.status)) {
     process.exit(1);

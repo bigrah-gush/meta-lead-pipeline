@@ -106,9 +106,11 @@ async function readSheet(sheets) {
 }
 
 async function sendCapiEvent(eventName, row, leadId) {
-  const eventTime = row[COL.TIMESTAMP]
-    ? Math.floor(new Date(row[COL.TIMESTAMP]).getTime() / 1000)
-    : Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000);
+  const SIX_DAYS = 6 * 24 * 60 * 60;
+  const rawTime = row[COL.TIMESTAMP] ? Math.floor(new Date(row[COL.TIMESTAMP]).getTime() / 1000) : now;
+  // Meta rejects events older than 7 days — cap to 6 days ago to be safe
+  const eventTime = rawTime < (now - SIX_DAYS) ? (now - SIX_DAYS) : rawTime;
 
   const payload = {
     data: [{

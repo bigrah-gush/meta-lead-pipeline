@@ -1,0 +1,28 @@
+(async () => {
+  const cronSecret = process.env.CRON_SYNC_SECRET;
+  const syncUrl =
+    process.env.CRON_SYNC_URL_DIALER_CALLS ||
+    'https://meta-lead-pipeline-production-407c.up.railway.app/jobs/sync-dialer-calls';
+
+  if (!cronSecret) {
+    console.error('CRON_SYNC_SECRET is not configured');
+    process.exit(1);
+  }
+
+  const res = await fetch(syncUrl, {
+    method: 'POST',
+    headers: {
+      'x-cron-secret': cronSecret,
+    },
+  });
+
+  const body = await res.text();
+  console.log(`sync-dialer-calls status=${res.status} body=${body}`);
+
+  if (![200, 202, 409].includes(res.status)) {
+    process.exit(1);
+  }
+})().catch((err) => {
+  console.error(err?.stack || err?.message || String(err));
+  process.exit(1);
+});

@@ -54,6 +54,7 @@ let syncAllLeadsRunning = false;
 let syncRecentRunning = false;
 let syncLeadQualityRunning = false;
 let syncCallsRunning = false;
+let syncDialerCallsRunning = false;
 let autoBookB2BRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -231,6 +232,57 @@ function triggerSyncCalls(trigger = 'unknown') {
       details: `trigger=${trigger}`,
     });
     syncCallsRunning = false;
+  });
+
+  return true;
+}
+
+function triggerSyncDialerCalls(trigger = 'unknown') {
+  if (syncDialerCallsRunning) return false;
+
+  syncDialerCallsRunning = true;
+  console.log(`[sync-dialer-calls] started by ${trigger}`);
+  let stderrBuffer = '';
+
+  const child = spawn(process.execPath, ['sync-dialer-calls.js'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[sync-dialer-calls] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[sync-dialer-calls] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[sync-dialer-calls] completed successfully');
+    } else {
+      console.error(`[sync-dialer-calls] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'sync-dialer-calls execution failed',
+        component: 'sync-dialer-calls',
+        error: new Error(`sync-dialer-calls exited with code ${code}`),
+        details: `trigger=${trigger}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    syncDialerCallsRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[sync-dialer-calls] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'sync-dialer-calls failed to start',
+      component: 'sync-dialer-calls',
+      error: err,
+      details: `trigger=${trigger}`,
+    });
+    syncDialerCallsRunning = false;
   });
 
   return true;
@@ -480,6 +532,22 @@ app.post('/jobs/sync-calls', (req, res) => {
   }
 
   if (!triggerSyncCalls('cron')) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started' });
+});
+
+// ── Cron-triggered JustCall dialer calls sync ────────────────────────────────
+app.post('/jobs/sync-dialer-calls', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  if (!triggerSyncDialerCalls('cron')) {
     return res.status(409).json({ status: 'already_running' });
   }
 

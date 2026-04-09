@@ -446,8 +446,8 @@ function triggerBuildFunnelReport(trigger = 'unknown') {
   return true;
 }
 
-// Run sync-recent every 2 hours as a failsafe for missed webhooks
-setInterval(() => triggerSyncRecent('30m-cron'), 30 * 60 * 1000);
+// Run sync-recent every 5 minutes as a failsafe for missed webhooks
+setInterval(() => triggerSyncRecent('5m-cron'), 5 * 60 * 1000);
 
 // Poll Sheet1 for new "businesses_(b2b)" rows and auto-book from 7PM-9PM IST slots.
 const autoBookIntervalMs = parseInt(process.env.B2B_AUTO_BOOK_INTERVAL_MS || '60000', 10);

@@ -5,9 +5,10 @@ const { spawn } = require('child_process');
 
 const { fetchLeadData } = require('./lib/meta');
 const { notifySlack } = require('./handlers/slack');
-const { addToSheets } = require('./handlers/sheets');
+const { addToSheets, updateSmsSentStatus } = require('./handlers/sheets');
 const { addToJustCall } = require('./handlers/justcall');
 const { sendToWebhook } = require('./handlers/webhook');
+const { sendWelcomeSms } = require('./handlers/justcall-sms');
 const { notifyFailure } = require('./lib/failure-alert');
 
 const app = express();
@@ -56,6 +57,7 @@ let syncLeadQualityRunning = false;
 let syncCallsRunning = false;
 let syncDialerCallsRunning = false;
 let autoBookB2BRunning = false;
+let buildFunnelReportRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
@@ -393,6 +395,57 @@ function triggerAutoBookB2B(trigger = 'unknown', dryRun = false) {
   return true;
 }
 
+function triggerBuildFunnelReport(trigger = 'unknown') {
+  if (buildFunnelReportRunning) return false;
+
+  buildFunnelReportRunning = true;
+  console.log(`[build-funnel-report] started by ${trigger}`);
+  let stderrBuffer = '';
+
+  const child = spawn(process.execPath, ['build-funnel-report.js'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[build-funnel-report] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[build-funnel-report] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[build-funnel-report] completed successfully');
+    } else {
+      console.error(`[build-funnel-report] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'build-funnel-report execution failed',
+        component: 'build-funnel-report',
+        error: new Error(`build-funnel-report exited with code ${code}`),
+        details: `trigger=${trigger}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    buildFunnelReportRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[build-funnel-report] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'build-funnel-report failed to start',
+      component: 'build-funnel-report',
+      error: err,
+      details: `trigger=${trigger}`,
+    });
+    buildFunnelReportRunning = false;
+  });
+
+  return true;
+}
+
 // Run sync-recent every 2 hours as a failsafe for missed webhooks
 setInterval(() => triggerSyncRecent('30m-cron'), 30 * 60 * 1000);
 
@@ -456,6 +509,27 @@ app.post('/webhook', async (req, res) => {
           });
         }
       });
+
+      // Send welcome SMS once the sheet row is confirmed written, then update the SMS Sent column
+      const sheetsResult = results[1];
+      if (sheetsResult.status === 'fulfilled') {
+        const { rowNumber } = sheetsResult.value || {};
+        try {
+          await sendWelcomeSms(lead);
+          console.log(`Welcome SMS sent to ${lead.full_name}`);
+          await updateSmsSentStatus(rowNumber, 'Yes');
+        } catch (smsErr) {
+          console.error('Welcome SMS failed:', smsErr.message);
+          await updateSmsSentStatus(rowNumber, smsErr.message).catch(() => {});
+          sendFailureAlert({
+            context: 'Welcome SMS failed while processing lead',
+            component: 'welcome-sms',
+            leadgenId: leadgen_id,
+            leadId: lead.id,
+            error: smsErr,
+          });
+        }
+      }
     } catch (err) {
       console.error(`Error processing lead ${leadgen_id}:`, err.message);
       sendFailureAlert({
@@ -587,6 +661,22 @@ app.post('/jobs/auto-book-b2b', (req, res) => {
   return res.status(202).json({ status: 'started', dryRun });
 });
 
+// ── Cron-triggered funnel report build + Vercel deploy ──────────────────────
+app.post('/jobs/build-funnel-report', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  if (!triggerBuildFunnelReport('cron')) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started' });
+});
+
 // ── Test endpoint (simulate a lead without Meta) ────────────────────────────
 app.post('/test-lead', async (req, res) => {
   const lead = req.body?.lead || {
@@ -621,6 +711,20 @@ app.post('/test-lead', async (req, res) => {
       error: r.reason,
     });
   });
+
+  const sheetsResult = results[1];
+  if (sheetsResult.status === 'fulfilled') {
+    const { rowNumber } = sheetsResult.value || {};
+    try {
+      const smsResult = await sendWelcomeSms(lead);
+      await updateSmsSentStatus(rowNumber, 'Yes');
+      report.push({ service: 'WelcomeSMS', status: 'fulfilled', error: null });
+      console.log('Welcome SMS sent (test):', smsResult.payload.body);
+    } catch (smsErr) {
+      await updateSmsSentStatus(rowNumber, smsErr.message).catch(() => {});
+      report.push({ service: 'WelcomeSMS', status: 'rejected', error: smsErr.message });
+    }
+  }
 
   res.json(report);
 });

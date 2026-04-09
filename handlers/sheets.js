@@ -7,7 +7,7 @@ const FORM_NAMES = {
   '1592360018634471': 'B2B - HI',
 };
 
-// Column order — matches HEADERS exactly (A through Q)
+// Column order — matches HEADERS exactly (A through R)
 const HEADERS = [
   'Timestamp',
   'Lead ID',
@@ -26,6 +26,7 @@ const HEADERS = [
   'Company Size',        // field: what_best_describes_your_company_size? (B2B | Leads)
   'Who They Sell To',    // field: who_do_you_primarily_sell_to? (B2B - HI)
   'Status',              // blank — for manual tracking
+  'SMS Sent',            // populated after welcome SMS attempt
 ];
 
 function mapLeadToRow(lead) {
@@ -47,6 +48,7 @@ function mapLeadToRow(lead) {
     lead['what_best_describes_your_company_size?']       || '',
     lead['who_do_you_primarily_sell_to?']                || '',
     '', // Status
+    '', // SMS Sent
   ];
 }
 
@@ -67,14 +69,14 @@ async function getSheets() {
 async function ensureHeaders(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A1:Q1',
+    range: 'Sheet1!A1:R1',
   });
 
   const existingHeaders = data.values?.[0] || [];
   if (existingHeaders.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A1:Q1',
+      range: 'Sheet1!A1:R1',
       valueInputOption: 'RAW',
       requestBody: { values: [HEADERS] },
     });
@@ -88,15 +90,33 @@ async function addToSheets(lead) {
 
   const row = mapLeadToRow(lead);
 
-  await sheets.spreadsheets.values.append({
+  const { data } = await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A:Q',
+    range: 'Sheet1!A:R',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
   });
 
-  console.log(`Sheet row added for lead ${lead.id}`);
+  // Parse row number from updatedRange e.g. "Sheet1!A5:R5" → 5
+  const updatedRange = data.updates?.updatedRange || '';
+  const rowMatch = updatedRange.match(/:R?(\d+)$/);
+  const rowNumber = rowMatch ? parseInt(rowMatch[1], 10) : null;
+
+  console.log(`Sheet row added for lead ${lead.id} (row ${rowNumber})`);
+  return { rowNumber };
 }
 
-module.exports = { addToSheets };
+async function updateSmsSentStatus(rowNumber, value) {
+  if (!rowNumber) return;
+  const sheets = await getSheets();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+    range: `Sheet1!R${rowNumber}`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [[value]] },
+  });
+  console.log(`SMS Sent column updated for row ${rowNumber}: ${value}`);
+}
+
+module.exports = { addToSheets, updateSmsSentStatus };

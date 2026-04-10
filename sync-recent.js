@@ -16,6 +16,8 @@ const axios = require('axios');
 const { google } = require('googleapis');
 const { addToJustCall } = require('./handlers/justcall');
 const { sendToWebhook } = require('./handlers/webhook');
+const { addToSheets, updateSmsSentStatus } = require('./handlers/sheets');
+const { sendWelcomeSms } = require('./handlers/justcall-sms');
 
 const FORM_IDS = process.env.META_FORM_IDS.split(',');
 
@@ -58,38 +60,6 @@ async function getExistingLeadIds(sheets) {
     range: 'Sheet1!B:B',
   });
   return new Set((data.values || []).slice(1).map(r => r[0]).filter(Boolean));
-}
-
-function mapLeadToRow(lead) {
-  return [
-    lead.created_time                                    || '',
-    lead.id                                              || '',
-    FORM_NAMES[lead.form_id] || lead.form_id             || '',
-    lead.campaign_name                                   || '',
-    lead.adset_name                                      || '',
-    lead.ad_name                                         || '',
-    lead.platform                                        || '',
-    lead.full_name                                       || '',
-    lead.email                                           || '',
-    lead.phone                                           || '',
-    lead.phone_number                                    || '',
-    lead.user_provided_phone_number                      || '',
-    lead.company_name                                    || '',
-    lead.website                                         || '',
-    lead['what_best_describes_your_company_size?']       || '',
-    lead['who_do_you_primarily_sell_to?']                || '',
-    '', // Status
-  ];
-}
-
-async function appendToSheets(sheets, leads) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A:Q',
-    valueInputOption: 'RAW',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: leads.map(mapLeadToRow) },
-  });
 }
 
 // ── Meta API ──────────────────────────────────────────────────────────────────
@@ -159,13 +129,31 @@ async function run() {
     return;
   }
 
-  // Batch-add to Sheets
-  await appendToSheets(sheets, newLeads);
-  console.log(`[sync-recent] Added ${newLeads.length} rows to sheet`);
-
-  // JustCall + Webhook per lead (errors are logged but don't abort)
+  // Process each lead: Sheets → SMS → JustCall + Webhook
+  let added = 0;
   for (const lead of newLeads) {
     const label = `${lead.full_name || 'Unknown'} (${lead.id})`;
+
+    // Add to sheet, get row number back
+    let rowNumber = null;
+    try {
+      const result = await addToSheets(lead);
+      rowNumber = result?.rowNumber || null;
+      added++;
+      console.log(`[sync-recent] Sheet row added: ${label} (row ${rowNumber})`);
+    } catch (err) {
+      console.error(`[sync-recent] Sheets failed for ${label}:`, err.message);
+    }
+
+    // Welcome SMS + update SMS Sent column
+    try {
+      await sendWelcomeSms(lead);
+      console.log(`[sync-recent] Welcome SMS sent: ${label}`);
+      await updateSmsSentStatus(rowNumber, 'Yes').catch(() => {});
+    } catch (smsErr) {
+      console.error(`[sync-recent] Welcome SMS failed for ${label}:`, smsErr.message);
+      await updateSmsSentStatus(rowNumber, smsErr.message).catch(() => {});
+    }
 
     try {
       await addToJustCall(lead);
@@ -181,7 +169,7 @@ async function run() {
     }
   }
 
-  console.log(`[sync-recent] Done. ${newLeads.length} leads recovered.`);
+  console.log(`[sync-recent] Done. ${added} leads recovered.`);
 }
 
 run().catch(err => {

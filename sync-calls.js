@@ -34,6 +34,7 @@ const RETELL_KEY  = process.env.RETELL_API_KEY;
 
 const HEADERS = [
   'Lead Name',
+  'Lead ID',
   'Company',
   'Website',
   'Email',
@@ -41,15 +42,14 @@ const HEADERS = [
   'Form',
   'Campaign',
   'Ad Name',
-  'Total Calls',
+  'Call Date',
+  'Outcome',
   'Connected',
-  'No Answer',
   'Voicemail',
   'Successful',
-  'Last Called',
-  'Last Outcome',
-  'Sentiment (last)',
-  'Latest Summary',
+  'Sentiment',
+  'Summary',
+  'Recording',
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ async function getSheets() {
 async function buildLeadMap(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!A:N',
+    range: 'leadform!A:N',
   });
 
   const [, ...rows] = data.values || [];
@@ -140,45 +140,36 @@ async function fetchAllCalls() {
   return all;
 }
 
-// ── Aggregate all calls for one lead into a single row ────────────────────
+// ── Build one row per call ─────────────────────────────────────────────────
 
-function aggregateLeadCalls(lead, calls) {
-  // Sort oldest → newest
-  const sorted = [...calls].sort((a, b) => a.start_timestamp - b.start_timestamp);
-  const last   = sorted[sorted.length - 1];
-  const lastAna = last.call_analysis || {};
-
-  const lastDate = last.start_timestamp
-    ? new Date(last.start_timestamp).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
-    : '';
-
-  const connected  = calls.filter(c => c.call_status === 'ended').length;
-  const noAnswer   = calls.filter(c => c.disconnection_reason === 'dial_no_answer').length;
-  const voicemail  = calls.filter(c => c.call_analysis?.in_voicemail).length;
-  const successful = calls.filter(c => c.call_analysis?.call_successful).length;
-
-  // Last meaningful outcome label
-  const lastOutcome = last.disconnection_reason || last.call_status || '';
-
-  return [
-    lead.name,
-    lead.company,
-    lead.website,
-    lead.email,
-    lead.phone,
-    lead.form,
-    lead.campaign,
-    lead.ad_name,
-    calls.length,
-    connected,
-    noAnswer,
-    voicemail,
-    successful,
-    lastDate,
-    lastOutcome,
-    lastAna.user_sentiment  || '',
-    lastAna.call_summary    || '',
-  ];
+function buildCallRows(lead, calls) {
+  return calls
+    .sort((a, b) => a.start_timestamp - b.start_timestamp)
+    .map(call => {
+      const ana = call.call_analysis || {};
+      const date = call.start_timestamp
+        ? new Date(call.start_timestamp).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+        : '';
+      return [
+        lead.name,
+        lead.id,
+        lead.company,
+        lead.website,
+        lead.email,
+        lead.phone,
+        lead.form,
+        lead.campaign,
+        lead.ad_name,
+        date,
+        call.disconnection_reason || call.call_status || '',
+        call.call_status === 'ended' ? 'Yes' : 'No',
+        ana.in_voicemail ? 'Yes' : 'No',
+        ana.call_successful ? 'Yes' : 'No',
+        ana.user_sentiment  || '',
+        ana.call_summary    || '',
+        call.recording_url  || '',
+      ];
+    });
 }
 
 // ── Ensure "AI Calls" sheet exists ────────────────────────────────────────
@@ -216,7 +207,7 @@ async function writeSheet(sheets, sheetId, rows) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
     range: `${SHEET_NAME}!A1`,
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: { values: [HEADERS, ...rows] },
   });
 
@@ -276,10 +267,10 @@ async function run() {
   console.log(`  ${matchedLeads} Meta leads were called`);
   console.log(`  ${unmatched} calls to non-Meta numbers (excluded)`);
 
-  // One row per lead, sorted by most recently called
+  // One row per call, sorted by call date desc
   const rows = Object.entries(callsByPhone)
-    .map(([ph, leadCalls]) => aggregateLeadCalls(leadMap[ph], leadCalls))
-    .sort((a, b) => b[14].localeCompare(a[14])); // sort by Last Called desc
+    .flatMap(([ph, leadCalls]) => buildCallRows(leadMap[ph], leadCalls))
+    .sort((a, b) => b[9].localeCompare(a[9])); // sort by Call Date desc
 
   console.log(`\nWriting to "${SHEET_NAME}" sheet...`);
   const sheetId = await ensureSheet(sheets);
@@ -289,7 +280,7 @@ async function run() {
   const successful    = calls.filter(c => leadMap[normalizePhone(c.to_number||'')] && c.call_analysis?.call_successful).length;
   const voicemail     = calls.filter(c => leadMap[normalizePhone(c.to_number||'')] && c.call_analysis?.in_voicemail).length;
 
-  console.log(`\n✓ Done. "${SHEET_NAME}" — ${rows.length} leads, ${totalCalls} total calls.`);
+  console.log(`\n✓ Done. "${SHEET_NAME}" — ${rows.length} call rows (${matchedLeads} leads).`);
   console.log(`  Successful: ${successful} | Voicemail: ${voicemail}`);
 }
 

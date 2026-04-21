@@ -30,7 +30,7 @@ async function getSheets() {
 async function getExistingLeadIds(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!B:B',
+    range: 'leadform!B:B',
   });
   const rows = data.values || [];
   // Skip header row, collect all lead IDs
@@ -136,7 +136,7 @@ async function run() {
   // Batch insert all new rows at once
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!A:Q',
+    range: 'leadform!A:Q',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: newLeads.map(toRow) },

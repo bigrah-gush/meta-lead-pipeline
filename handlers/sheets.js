@@ -69,14 +69,14 @@ async function getSheets() {
 async function ensureHeaders(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A1:R1',
+    range: 'leadform!A1:R1',
   });
 
   const existingHeaders = data.values?.[0] || [];
   if (existingHeaders.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A1:R1',
+      range: 'leadform!A1:R1',
       valueInputOption: 'RAW',
       requestBody: { values: [HEADERS] },
     });
@@ -92,7 +92,7 @@ async function addToSheets(lead) {
 
   const { data } = await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!A:R',
+    range: 'leadform!A:R',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
@@ -112,7 +112,7 @@ async function updateSmsSentStatus(rowNumber, value) {
   const sheets = await getSheets();
   await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: `Sheet1!R${rowNumber}`,
+    range: `leadform!R${rowNumber}`,
     valueInputOption: 'RAW',
     requestBody: { values: [[value]] },
   });

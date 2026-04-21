@@ -10,8 +10,8 @@
  *   "bad" | "disqualified"      → skipped (no signal = negative signal)
  *
  * Adds two tracking columns to the sheet:
- *   R — CAPI Event sent (e.g. "QualifiedLead")
- *   S — CAPI Sent At   (ISO timestamp)
+ *   U — CAPI Event sent (e.g. "salesqualifiedlead")
+ *   V — CAPI Sent At   (ISO timestamp)
  *
  * Run manually or on a cron:
  *   node sync-lead-quality.js
@@ -52,8 +52,8 @@ const COL = {
   CO_SIZE:     14, // O
   SELLS_TO:    15, // P
   STATUS:      16, // Q  ← user fills this in
-  CAPI_EVENT:  17, // R  ← we write this
-  CAPI_SENT:   18, // S  ← we write this
+  CAPI_EVENT:  20, // U  ← we write this
+  CAPI_SENT:   21, // V  ← we write this
 };
 
 // Status → CAPI event name mapping
@@ -76,11 +76,21 @@ function hashPhone(raw) {
 
 function buildUserData(row) {
   const ud = {};
-  const email = row[COL.EMAIL];
-  const phone  = row[COL.PHONE] || row[COL.PHONE_NUM] || row[COL.USER_PHONE];
+  const email    = row[COL.EMAIL];
+  const phone    = row[COL.PHONE] || row[COL.PHONE_NUM] || row[COL.USER_PHONE];
+  const fullName = (row[COL.FULL_NAME] || '').trim();
 
   if (email) ud.em = [sha256(email)];
-  if (phone)  ud.ph = [hashPhone(phone)];
+  if (phone) ud.ph = [hashPhone(phone)];
+
+  // Split full name into first/last and hash — improves Meta match rate
+  if (fullName) {
+    const parts = fullName.split(/\s+/);
+    const first = parts[0];
+    const last  = parts.length > 1 ? parts.slice(1).join(' ') : '';
+    if (first) ud.fn = [sha256(first)];
+    if (last)  ud.ln = [sha256(last)];
+  }
 
   return ud;
 }
@@ -100,7 +110,7 @@ async function getSheets() {
 async function readSheet(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!A:S',
+    range: 'leadform!A:V',
   });
   return data.values || [];
 }
@@ -138,7 +148,7 @@ async function markRowSent(sheets, sheetRow, eventName) {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range:         `Sheet1!R${sheetRow}:S${sheetRow}`,
+    range:         `leadform!U${sheetRow}:V${sheetRow}`,
     valueInputOption: 'RAW',
     requestBody:   { values: [[eventName, sentAt]] },
   });

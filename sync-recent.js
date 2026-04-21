@@ -57,7 +57,7 @@ async function getSheets() {
 async function getExistingLeadIds(sheets) {
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-    range: 'Sheet1!B:B',
+    range: 'leadform!B:B',
   });
   return new Set((data.values || []).slice(1).map(r => r[0]).filter(Boolean));
 }

@@ -122,7 +122,7 @@ async function run() {
   console.log('Writing header + all leads...');
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: 'Sheet1!A1',
+    range: 'leadform!A1',
     valueInputOption: 'RAW',
     requestBody: { values: [HEADER, ...rows] },
   });

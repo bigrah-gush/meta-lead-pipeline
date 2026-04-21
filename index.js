@@ -342,6 +342,8 @@ function triggerSyncLeadQuality(trigger = 'unknown') {
 }
 
 function triggerAutoBookB2B(trigger = 'unknown', dryRun = false) {
+  // disabled
+  return false;
   if (autoBookB2BRunning) return false;
 
   autoBookB2BRunning = true;

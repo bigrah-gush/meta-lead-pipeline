@@ -1,3 +1,4 @@
 node_modules/
 .env
 google-credentials.json
+.b2b-auto-book-state.json

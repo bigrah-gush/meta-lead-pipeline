@@ -59,4 +59,4 @@ async function addToJustCall(lead) {
   await Promise.all(tasks);
 }
 
-module.exports = { addToJustCall };
+module.exports = { addToJustCall, addToCampaign };

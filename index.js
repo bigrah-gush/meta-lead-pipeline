@@ -58,6 +58,7 @@ let syncCallsRunning = false;
 let syncDialerCallsRunning = false;
 let autoBookB2BRunning = false;
 let buildFunnelReportRunning = false;
+let syncNurtureCampaignRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
@@ -448,8 +449,62 @@ function triggerBuildFunnelReport(trigger = 'unknown') {
   return true;
 }
 
+function triggerSyncNurtureCampaign(trigger = 'unknown') {
+  if (syncNurtureCampaignRunning) return false;
+
+  syncNurtureCampaignRunning = true;
+  console.log(`[sync-nurture] started by ${trigger}`);
+  let stderrBuffer = '';
+
+  const child = spawn(process.execPath, ['sync-nurture-campaign.js'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[sync-nurture] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[sync-nurture] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[sync-nurture] completed successfully');
+    } else {
+      console.error(`[sync-nurture] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'sync-nurture-campaign execution failed',
+        component: 'sync-nurture-campaign',
+        error: new Error(`sync-nurture-campaign exited with code ${code}`),
+        details: `trigger=${trigger}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    syncNurtureCampaignRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[sync-nurture] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'sync-nurture-campaign failed to start',
+      component: 'sync-nurture-campaign',
+      error: err,
+      details: `trigger=${trigger}`,
+    });
+    syncNurtureCampaignRunning = false;
+  });
+
+  return true;
+}
+
 // Run sync-recent every 5 minutes as a failsafe for missed webhooks
 setInterval(() => triggerSyncRecent('5m-cron'), 5 * 60 * 1000);
+
+// Mark demos booked + add non-bookers to JustCall nurture campaign every 15 minutes
+setInterval(() => triggerSyncNurtureCampaign('15m-cron'), 15 * 60 * 1000);
 
 // Poll Sheet1 for new "businesses_(b2b)" rows and auto-book from 7PM-9PM IST slots.
 const autoBookIntervalMs = parseInt(process.env.B2B_AUTO_BOOK_INTERVAL_MS || '60000', 10);
@@ -661,6 +716,22 @@ app.post('/jobs/auto-book-b2b', (req, res) => {
   }
 
   return res.status(202).json({ status: 'started', dryRun });
+});
+
+// ── Cron-triggered nurture campaign sync ────────────────────────────────────
+app.post('/jobs/sync-nurture-campaign', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  if (!triggerSyncNurtureCampaign('manual')) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started' });
 });
 
 // ── Cron-triggered funnel report build + Vercel deploy ──────────────────────

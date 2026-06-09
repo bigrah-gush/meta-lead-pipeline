@@ -59,6 +59,7 @@ let syncDialerCallsRunning = false;
 let autoBookB2BRunning = false;
 let buildFunnelReportRunning = false;
 let syncNurtureCampaignRunning = false;
+let syncNoshowCampaignRunning = false;
 const recentLeadgenIds = new Map();
 const LEADGEN_DEDUPE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
@@ -500,6 +501,57 @@ function triggerSyncNurtureCampaign(trigger = 'unknown') {
   return true;
 }
 
+function triggerSyncNoshowCampaign(trigger = 'unknown') {
+  if (syncNoshowCampaignRunning) return false;
+
+  syncNoshowCampaignRunning = true;
+  console.log(`[sync-noshow] started by ${trigger}`);
+  let stderrBuffer = '';
+
+  const child = spawn(process.execPath, ['sync-noshow-campaign.js', '--commit'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[sync-noshow] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-2000);
+    process.stderr.write(`[sync-noshow] ${chunk}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[sync-noshow] completed successfully');
+    } else {
+      console.error(`[sync-noshow] exited with code ${code}`);
+      sendFailureAlert({
+        context: 'sync-noshow-campaign execution failed',
+        component: 'sync-noshow-campaign',
+        error: new Error(`sync-noshow-campaign exited with code ${code}`),
+        details: `trigger=${trigger}${stderrBuffer ? `\nstderr_tail=${stderrBuffer}` : ''}`,
+      });
+    }
+    syncNoshowCampaignRunning = false;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[sync-noshow] failed to start: ${err.message}`);
+    sendFailureAlert({
+      context: 'sync-noshow-campaign failed to start',
+      component: 'sync-noshow-campaign',
+      error: err,
+      details: `trigger=${trigger}`,
+    });
+    syncNoshowCampaignRunning = false;
+  });
+
+  return true;
+}
+
 // Run sync-recent every 5 minutes as a failsafe for missed webhooks
 setInterval(() => triggerSyncRecent('5m-cron'), 5 * 60 * 1000);
 
@@ -728,6 +780,22 @@ app.post('/jobs/sync-nurture-campaign', (req, res) => {
   }
 
   if (!triggerSyncNurtureCampaign('manual')) {
+    return res.status(409).json({ status: 'already_running' });
+  }
+
+  return res.status(202).json({ status: 'started' });
+});
+
+// ── Cron-triggered no-show campaign sync (daily 7am EST) ────────────────────
+app.post('/jobs/sync-noshow-campaign', (req, res) => {
+  const configuredSecret = process.env.CRON_SYNC_SECRET;
+  const providedSecret = req.headers['x-cron-secret'];
+
+  if (!configuredSecret || !providedSecret || providedSecret !== configuredSecret) {
+    return res.sendStatus(403);
+  }
+
+  if (!triggerSyncNoshowCampaign('cron')) {
     return res.status(409).json({ status: 'already_running' });
   }
 

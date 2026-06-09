@@ -4,11 +4,8 @@ const CAMPAIGN_ALL   = '3085672';
 const CAMPAIGN_RETIRE = '3085673';
 
 function getHeaders() {
-  const auth = Buffer.from(
-    `${process.env.JUSTCALL_API_KEY}:${process.env.JUSTCALL_API_SECRET}`
-  ).toString('base64');
   return {
-    Authorization: `Basic ${auth}`,
+    Authorization: `${process.env.JUSTCALL_API_KEY}:${process.env.JUSTCALL_API_SECRET}`,
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };

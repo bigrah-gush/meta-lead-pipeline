@@ -119,7 +119,8 @@ function extractDomain(email, website) {
 
 function normalizePhone(raw) {
   if (!raw) return null;
-  return raw.replace(/\s/g, '');
+  const digits = raw.replace(/[^\d+]/g, '');
+  return digits || null;
 }
 
 function splitName(fullName) {
